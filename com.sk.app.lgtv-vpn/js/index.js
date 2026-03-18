@@ -2,6 +2,14 @@
 var curState = "UNKNOWN";
 var mgmtPort = 7505;
 var launchInitialized = false;
+var pendingProfileName = "";
+var DEFAULT_LUNA_TIMEOUT_MS = 30000;
+var CONNECT_COMMAND_TIMEOUT_MS = 60000;
+var COMMAND_TIMEOUT_MS = 30000;
+var DEFAULT_STATE_RETRIES = 20;
+var STATE_RETRY_DELAY_MS = 3000;
+var CONNECT_STATE_CHECK_DELAY_MS = 5000;
+var LAST_PROFILE_KEY = "lgtv-vpn.last-profile";
 
 function noop() {}
 
@@ -151,7 +159,7 @@ function lunaCall(uri, parameters, timeout, onSuccess, onFailure) {
   if (typeof timeoutMs !== "number") {
     handleFailure = onSuccess || noop;
     handleSuccess = timeout || noop;
-    timeoutMs = 8000;
+    timeoutMs = DEFAULT_LUNA_TIMEOUT_MS;
   }
 
   if (!window.webOS || !window.webOS.service || typeof window.webOS.service.request !== "function") {
@@ -250,6 +258,50 @@ function clearDropdown(dropdown) {
   }
 }
 
+function getStoredValue(key) {
+  try {
+    if (window.localStorage) {
+      return window.localStorage.getItem(key);
+    }
+  } catch (error) {
+    return null;
+  }
+
+  return null;
+}
+
+function setStoredValue(key, value) {
+  try {
+    if (window.localStorage) {
+      window.localStorage.setItem(key, value);
+    }
+  } catch (error) {
+    noop();
+  }
+}
+
+function rememberLastProfile(profileName) {
+  if (profileName) {
+    setStoredValue(LAST_PROFILE_KEY, profileName);
+  }
+}
+
+function restoreLastProfile(dropdown) {
+  var lastProfile = getStoredValue(LAST_PROFILE_KEY);
+  var i;
+
+  if (!lastProfile) {
+    return;
+  }
+
+  for (i = 0; i < dropdown.options.length; i += 1) {
+    if (dropdown.options[i].value === lastProfile) {
+      dropdown.value = lastProfile;
+      return;
+    }
+  }
+}
+
 function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
@@ -288,7 +340,7 @@ function terminateDaemon(done) {
   lunaCall(
     "luna://org.webosbrew.hbchannel.service/exec",
     { command: '{ echo "signal SIGTERM"; sleep 1s; echo "exit";} | nc 127.0.0.1 ' + mgmtPort },
-    15000,
+    COMMAND_TIMEOUT_MS,
     function () {
       done();
     },
@@ -300,7 +352,7 @@ function terminateDaemon(done) {
 }
 
 function getState(retries, canFail, done) {
-  var remainingRetries = typeof retries === "number" ? retries : 3;
+  var remainingRetries = typeof retries === "number" ? retries : DEFAULT_STATE_RETRIES;
   var allowFailure = !!canFail;
   var onComplete = done || noop;
 
@@ -317,6 +369,8 @@ function getState(retries, canFail, done) {
 
       if (containsText(output, "CONNECTED")) {
         curState = "CONNECTED";
+        rememberLastProfile(pendingProfileName || document.getElementById("configDropdown").value);
+        pendingProfileName = "";
         updateStateLabel("CONNECTED", "connected");
         setButtonLabel(curState);
         setButtonDisabled(false);
@@ -329,12 +383,13 @@ function getState(retries, canFail, done) {
         window.setTimeout(function () {
           logMessage("state from retry wait");
           getState(remainingRetries - 1, allowFailure, onComplete);
-        }, 1500);
+        }, STATE_RETRY_DELAY_MS);
         extendDebug("VPN is connecting, retrying state check...");
         return;
       }
 
       curState = "DISCONNECTED";
+      pendingProfileName = "";
       updateStateLabel("DISCONNECTED", "disconnected");
       setButtonLabel(curState);
       setButtonDisabled(false);
@@ -346,7 +401,7 @@ function getState(retries, canFail, done) {
         window.setTimeout(function () {
           logMessage("state from retry");
           getState(remainingRetries - 1, allowFailure, onComplete);
-        }, 1500);
+        }, STATE_RETRY_DELAY_MS);
 
         if (!allowFailure) {
           extendDebug("VPN not responding, retrying state check (" + remainingRetries + " attempts left)...");
@@ -355,6 +410,7 @@ function getState(retries, canFail, done) {
       }
 
       curState = "DISCONNECTED";
+      pendingProfileName = "";
       updateStateLabel("DISCONNECTED", "disconnected");
       setButtonLabel(curState);
       setButtonDisabled(false);
@@ -380,7 +436,7 @@ function loadProfiles(done) {
     {
       command: "cd /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles && ls -1 *.ovpn"
     },
-    15000,
+    COMMAND_TIMEOUT_MS,
     function (response) {
       var files = parseProfileList(response.stdoutString);
       var emptyOption;
@@ -406,6 +462,7 @@ function loadProfiles(done) {
         dropdown.appendChild(option);
       }
 
+      restoreLastProfile(dropdown);
       extendDebug("Loaded " + files.length + " profile(s).");
       done(null);
     },
@@ -431,6 +488,7 @@ function connect() {
   setButtonDisabled(true);
   setDropdownDisabled(true);
   setDebug("Launching OpenVPN with " + configName);
+  pendingProfileName = configName;
   startCommand = buildOpenVpnStartCommand(configName);
 
   lunaCall(
@@ -438,13 +496,23 @@ function connect() {
     {
       command: startCommand
     },
+    CONNECT_COMMAND_TIMEOUT_MS,
     function () {
       logMessage("state from connect");
       window.setTimeout(function () {
         getState();
-      }, 2000);
+      }, CONNECT_STATE_CHECK_DELAY_MS);
     },
     function (error) {
+      if (error && error.message === "Timeout") {
+        extendDebug("OpenVPN launch is taking longer than expected. Continuing to wait for the tunnel...");
+        window.setTimeout(function () {
+          getState();
+        }, CONNECT_STATE_CHECK_DELAY_MS);
+        return;
+      }
+
+      pendingProfileName = "";
       setDebug(error.message);
       showError("Start failed " + error.message);
       setButtonDisabled(false);
