@@ -11,6 +11,18 @@ A small LG webOS TV app that wraps an OpenVPN client so you can start and stop V
 - Provides a simple on-device UI to connect, disconnect, and view connection status.
 - The VPN connection is kept even when switching apps. So Youtube / Netflix etc. is also running through the VPN connection.
 
+## Homebrew Channel safety note
+Older versions of this fork could break `org.webosbrew.hbchannel.service` after connecting a VPN. The problem was the OpenVPN launch path: the app started `openvpn --daemon` through `luna://org.webosbrew.hbchannel.service/spawn`, which could leave inherited service and Luna bus file descriptors attached to the daemon. After that, later `hbchannel.service/exec` calls could stop working correctly or lose the rooted service state.
+
+This fork now starts OpenVPN through `luna://org.webosbrew.hbchannel.service/exec`, closes inherited file descriptors before daemonizing, redirects stdio to `/dev/null`, and binds the management interface to `127.0.0.1` instead of `0.0.0.0`.
+
+Quick verification on a rooted TV:
+
+```bash
+luna-send -n 1 luna://org.webosbrew.hbchannel.service/exec '{"command":"id"}'
+```
+
+That command should keep returning `uid=0(root)` before connecting, while connected, and after exiting the app.
 
 ## Installation options
 ### Install a published IPK
