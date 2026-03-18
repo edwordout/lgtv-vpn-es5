@@ -1,0 +1,15 @@
+{
+  "name": "lgtv-vpn",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.js",
+    "lint": "eslint com.sk.app.lgtv-vpn/js/index.js com.sk.app.lgtv-vpn/js/legacy-polyfills.js scripts/*.js",
+    "test": "npm run build --silent && es-check es5 \"build/com.sk.app.lgtv-vpn/**/*.js\" && node scripts/test-compat.js"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.28.0",
+    "@babel/preset-env": "^7.28.0",
+    "es-check": "^8.0.0",
+    "eslint": "^8.57.0"
+  }
+}

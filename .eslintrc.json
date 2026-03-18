@@ -1,0 +1,33 @@
+{
+  "root": true,
+  "extends": "eslint:recommended",
+  "env": {
+    "browser": true,
+    "es6": false
+  },
+  "globals": {
+    "SpatialNavigation": "readonly"
+  },
+  "parserOptions": {
+    "ecmaVersion": 5,
+    "sourceType": "script"
+  },
+  "rules": {
+    "no-console": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "scripts/*.js"
+      ],
+      "env": {
+        "browser": false,
+        "node": true
+      },
+      "parserOptions": {
+        "ecmaVersion": 2022,
+        "sourceType": "script"
+      }
+    }
+  ]
+}

@@ -1,232 +1,519 @@
-
 /* Remote focus helpers */
-const eventRegister = (() => {
-  const items = () => document.getElementsByClassName("item");
-  const blurAll = () => { for (const n of items()) n.blur(); };
-  const over = e => { blurAll(); e.target.focus(); };
-  const kd = e => { if (e.keyCode === 13) e.target.classList.add("active"); };
-  const ku = e => { if (e.keyCode === 13) e.target.classList.remove("active"); };
-  const add = () => { for (const n of items()) { n.addEventListener("mouseover", over); n.addEventListener("mouseout", () => n.blur()); n.addEventListener("keydown", kd); n.addEventListener("keyup", ku); } };
-  return { add };
-})();
+var curState = "UNKNOWN";
+var mgmtPort = 7505;
+var launchInitialized = false;
 
-let curState = "UNKNOWN", poll = null;
-const mgmtPort = 7505;
-let visibilityProp = null;
-let visibilityEvent = null;
+function noop() {}
 
-function lunaCall(uri, parameters, timeout = 8000) {
-  return Promise.race([
-    new Promise((_, r) => setTimeout(() => r(new Error("Timeout")), timeout)),
-    new Promise((res, rej) => {
-      const s = uri.indexOf('/', 7);
-      webOS.service.request(uri.substring(0, s), {
-        method: uri.substring(s + 1),
-        parameters,
-        onSuccess: res, onFailure: r => rej(new Error(JSON.stringify(r)))
-      });
-    })
-  ]);
+function logMessage(message) {
+  if (window.console && typeof window.console.log === "function") {
+    window.console.log(message);
+  }
+}
+
+function containsText(value, search) {
+  return value.indexOf(search) !== -1;
+}
+
+function trimString(value) {
+  return String(value).replace(/^\s+|\s+$/g, "");
+}
+
+function setElementText(element, text) {
+  if (!element) {
+    return;
+  }
+
+  if ("textContent" in element) {
+    element.textContent = text;
+    return;
+  }
+
+  element.innerText = text;
+}
+
+function addClassName(element, className) {
+  var currentClasses;
+
+  if (!element || !className) {
+    return;
+  }
+
+  currentClasses = " " + (element.className || "") + " ";
+  if (currentClasses.indexOf(" " + className + " ") === -1) {
+    element.className = element.className ? element.className + " " + className : className;
+  }
+}
+
+function removeClassName(element, className) {
+  var currentClasses;
+
+  if (!element || !className) {
+    return;
+  }
+
+  currentClasses = " " + (element.className || "") + " ";
+  while (currentClasses.indexOf(" " + className + " ") !== -1) {
+    currentClasses = currentClasses.replace(" " + className + " ", " ");
+  }
+
+  element.className = trimString(currentClasses);
+}
+
+function refreshFocusableItems() {
+  if (window.SpatialNavigation && typeof window.SpatialNavigation.makeFocusable === "function") {
+    window.SpatialNavigation.makeFocusable();
+  }
+  focusFirstEnabledItem();
+}
+
+var eventRegister = (function () {
+  function items() {
+    return document.getElementsByClassName("item");
+  }
+
+  function blurAll() {
+    var nodes = items();
+    var i;
+
+    for (i = 0; i < nodes.length; i += 1) {
+      nodes[i].blur();
+    }
+  }
+
+  function getEventTarget(event) {
+    return event.target || event.srcElement;
+  }
+
+  function handleMouseOver(event) {
+    var target = getEventTarget(event);
+
+    blurAll();
+    if (target && typeof target.focus === "function") {
+      target.focus();
+    }
+  }
+
+  function handleMouseOut(event) {
+    var target = getEventTarget(event);
+
+    if (target && typeof target.blur === "function") {
+      target.blur();
+    }
+  }
+
+  function handleKeyDown(event) {
+    var target = getEventTarget(event);
+
+    if (event.keyCode === 13) {
+      addClassName(target, "active");
+    }
+  }
+
+  function handleKeyUp(event) {
+    var target = getEventTarget(event);
+
+    if (event.keyCode === 13) {
+      removeClassName(target, "active");
+    }
+  }
+
+  function add() {
+    var nodes = items();
+    var i;
+    var node;
+
+    for (i = 0; i < nodes.length; i += 1) {
+      node = nodes[i];
+      if (node.__vpnFocusBound) {
+        continue;
+      }
+
+      node.__vpnFocusBound = true;
+      node.addEventListener("mouseover", handleMouseOver, false);
+      node.addEventListener("mouseout", handleMouseOut, false);
+      node.addEventListener("keydown", handleKeyDown, false);
+      node.addEventListener("keyup", handleKeyUp, false);
+    }
+  }
+
+  return { add: add };
+}());
+
+function lunaCall(uri, parameters, timeout, onSuccess, onFailure) {
+  var timeoutMs = timeout;
+  var handleSuccess = onSuccess || noop;
+  var handleFailure = onFailure || noop;
+  var separatorIndex;
+  var completed = false;
+  var timerId;
+
+  if (typeof timeoutMs !== "number") {
+    handleFailure = onSuccess || noop;
+    handleSuccess = timeout || noop;
+    timeoutMs = 8000;
+  }
+
+  if (!window.webOS || !window.webOS.service || typeof window.webOS.service.request !== "function") {
+    handleFailure(new Error("webOS service API unavailable."));
+    return;
+  }
+
+  separatorIndex = uri.indexOf("/", 7);
+  timerId = window.setTimeout(function () {
+    if (completed) {
+      return;
+    }
+
+    completed = true;
+    handleFailure(new Error("Timeout"));
+  }, timeoutMs);
+
+  function finish(callback, payload) {
+    if (completed) {
+      return;
+    }
+
+    completed = true;
+    window.clearTimeout(timerId);
+    callback(payload);
+  }
+
+  try {
+    window.webOS.service.request(uri.substring(0, separatorIndex), {
+      method: uri.substring(separatorIndex + 1),
+      parameters: parameters || {},
+      onSuccess: function (response) {
+        finish(handleSuccess, response);
+      },
+      onFailure: function (response) {
+        finish(handleFailure, new Error(JSON.stringify(response)));
+      }
+    });
+  } catch (error) {
+    finish(handleFailure, error);
+  }
 }
 
 function setButtonLabel(state) {
-  const btn = document.getElementById('cbtn');
-  btn.innerText = state === "CONNECTED" ? "Stop" : "Connect";
+  var button = document.getElementById("cbtn");
+  setElementText(button, state === "CONNECTED" ? "Stop" : "Connect");
 }
+
 function focusFirstEnabledItem() {
-  for (el of document.getElementsByClassName('item')) {
-    if(!el.disabled) {
-      el.focus();
+  var items = document.getElementsByClassName("item");
+  var i;
+
+  for (i = 0; i < items.length; i += 1) {
+    if (!items[i].disabled) {
+      items[i].focus();
       return;
-    } 
+    }
   }
 }
 
-function setButtonDisabled(dis) { 
-  document.getElementById('cbtn').disabled = dis;
-  SpatialNavigation.makeFocusable();
-  focusFirstEnabledItem();
-}
-function setDropdownDisabled(dis) { document.getElementById('configDropdown').disabled = dis;
-  SpatialNavigation.makeFocusable();
-  focusFirstEnabledItem();
+function setButtonDisabled(disabled) {
+  document.getElementById("cbtn").disabled = disabled;
+  refreshFocusableItems();
 }
 
-function updateStateLabel(text, cls = null) {
-  const s = document.getElementById('state');
-  s.className = '';
-  if (cls) s.classList.add(cls);
-  s.innerText = text;
+function setDropdownDisabled(disabled) {
+  document.getElementById("configDropdown").disabled = disabled;
+  refreshFocusableItems();
 }
 
-function setDebug(msg) { document.getElementById('debugInfo').innerText = "DebugMsg:\n"+msg; }
-function extendDebug(msg) { document.getElementById('debugInfo').innerText = document.getElementById('debugInfo').innerText + "\n" + msg; }
-function showError(msg) { document.getElementById('errorMsg').innerText = msg; }
+function updateStateLabel(text, className) {
+  var stateElement = document.getElementById("state");
 
-async function terminateDaemon() {
-  try {
-    await lunaCall('luna://org.webosbrew.hbchannel.service/exec', { command: `{ echo "signal SIGTERM"; sleep 1s; echo "exit";} | nc 127.0.0.1 ${mgmtPort}` },timeout=15000);
-  } catch (e) {
-    extendDebug(`Cleanup stop failed: ${e.message}`);
+  stateElement.className = className || "";
+  setElementText(stateElement, text);
+}
+
+function setDebug(message) {
+  setElementText(document.getElementById("debugInfo"), "DebugMsg:\n" + message);
+}
+
+function extendDebug(message) {
+  var debugElement = document.getElementById("debugInfo");
+  var currentValue = debugElement.textContent || debugElement.innerText || "";
+
+  setElementText(debugElement, currentValue ? currentValue + "\n" + message : message);
+}
+
+function showError(message) {
+  setElementText(document.getElementById("errorMsg"), message);
+}
+
+function clearDropdown(dropdown) {
+  while (dropdown.firstChild) {
+    dropdown.removeChild(dropdown.firstChild);
   }
 }
 
-async function getState(retries = 3, canfail = false) {
-  try {
-    updateStateLabel('Checking...', "connecting");
-    showError("");
-    const r = await lunaCall('luna://org.webosbrew.hbchannel.service/exec', { command: `{ echo "state"; sleep 1s; echo "exit";} | nc 127.0.0.1 ${mgmtPort}` });
-    const out = r.stdoutString || '';
-    setDebug(out);
-    if (out.includes('CONNECTED')) {
-      curState = 'CONNECTED';
-      updateStateLabel('CONNECTED', 'connected');
-      setButtonLabel(curState);
-      setButtonDisabled(false);
-      setDropdownDisabled(true);
-    } else if (out.includes('WAIT')) {
-      setTimeout((retries, canfail) => {console.log('state from retry wait'); getState(retries - 1, canfail)}, 1500, retries, canfail); 
-      extendDebug('VPN is connecting, retrying state check...');
-    } else {
-      curState = 'DISCONNECTED';
-      updateStateLabel('DISCONNECTED', 'disconnected');
+function parseProfileList(output) {
+  var lines = (output || "").split(/\r?\n/);
+  var files = [];
+  var i;
+  var fileName;
+
+  for (i = 0; i < lines.length; i += 1) {
+    fileName = trimString(lines[i]);
+    if (fileName) {
+      files.push(fileName);
+    }
+  }
+
+  return files;
+}
+
+function terminateDaemon(done) {
+  lunaCall(
+    "luna://org.webosbrew.hbchannel.service/exec",
+    { command: '{ echo "signal SIGTERM"; sleep 1s; echo "exit";} | nc 127.0.0.1 ' + mgmtPort },
+    15000,
+    function () {
+      done();
+    },
+    function (error) {
+      extendDebug("Cleanup stop failed: " + error.message);
+      done();
+    }
+  );
+}
+
+function getState(retries, canFail, done) {
+  var remainingRetries = typeof retries === "number" ? retries : 3;
+  var allowFailure = !!canFail;
+  var onComplete = done || noop;
+
+  updateStateLabel("Checking...", "connecting");
+  showError("");
+
+  lunaCall(
+    "luna://org.webosbrew.hbchannel.service/exec",
+    { command: '{ echo "state"; sleep 1s; echo "exit";} | nc 127.0.0.1 ' + mgmtPort },
+    function (response) {
+      var output = response.stdoutString || "";
+
+      setDebug(output);
+
+      if (containsText(output, "CONNECTED")) {
+        curState = "CONNECTED";
+        updateStateLabel("CONNECTED", "connected");
+        setButtonLabel(curState);
+        setButtonDisabled(false);
+        setDropdownDisabled(true);
+        onComplete(null, curState);
+        return;
+      }
+
+      if (containsText(output, "WAIT")) {
+        window.setTimeout(function () {
+          logMessage("state from retry wait");
+          getState(remainingRetries - 1, allowFailure, onComplete);
+        }, 1500);
+        extendDebug("VPN is connecting, retrying state check...");
+        return;
+      }
+
+      curState = "DISCONNECTED";
+      updateStateLabel("DISCONNECTED", "disconnected");
       setButtonLabel(curState);
       setButtonDisabled(false);
       setDropdownDisabled(false);
-    }
-  } catch (e) {
-    if (retries > 0) { 
-      setTimeout((retries, canfail) => {console.log('state from retry'); getState(retries - 1, canfail)}, 1500,retries, canfail); 
-      if(!canfail){
-        extendDebug(`VPN not responding, retrying state check (${retries} attempts left)...`);
+      onComplete(null, curState);
+    },
+    function (error) {
+      if (remainingRetries > 0) {
+        window.setTimeout(function () {
+          logMessage("state from retry");
+          getState(remainingRetries - 1, allowFailure, onComplete);
+        }, 1500);
+
+        if (!allowFailure) {
+          extendDebug("VPN not responding, retrying state check (" + remainingRetries + " attempts left)...");
+        }
+        return;
       }
-    }
-    else {
-      curState = 'DISCONNECTED';
-      updateStateLabel('DISCONNECTED', 'disconnected');
+
+      curState = "DISCONNECTED";
+      updateStateLabel("DISCONNECTED", "disconnected");
       setButtonLabel(curState);
       setButtonDisabled(false);
       setDropdownDisabled(false);
-      if(!canfail)
-      {
-        setDebug(e.message);
-        showError('Could not connect to management interface.');
+
+      if (!allowFailure) {
+        setDebug(error.message);
+        showError("Could not connect to management interface.");
       }
+
+      onComplete(error);
     }
-  }
+  );
 }
 
-async function loadProfiles() {
-  const dropdown = document.getElementById("configDropdown");
-  dropdown.innerHTML = "";
-  try {
-    const r = await lunaCall("luna://org.webosbrew.hbchannel.service/exec", {
-      command:
-        `cd /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles && ls -1 *.ovpn`
-    },timeout=15000);
-    const files = (r.stdoutString || "")
-      .split(/\r?\n/)
-      .map((f) => f.trim())
-      .filter((f) => f.length > 0);
+function loadProfiles(done) {
+  var dropdown = document.getElementById("configDropdown");
 
-    if (files.length === 0) {
-      const emptyOption = document.createElement("option");
-      emptyOption.value = "";
-      emptyOption.textContent = "Keine Profile gefunden";
-      dropdown.appendChild(emptyOption);
+  clearDropdown(dropdown);
+
+  lunaCall(
+    "luna://org.webosbrew.hbchannel.service/exec",
+    {
+      command: "cd /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles && ls -1 *.ovpn"
+    },
+    15000,
+    function (response) {
+      var files = parseProfileList(response.stdoutString);
+      var emptyOption;
+      var option;
+      var i;
+
+      if (files.length === 0) {
+        emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        setElementText(emptyOption, "Keine Profile gefunden");
+        dropdown.appendChild(emptyOption);
+        setDropdownDisabled(true);
+        setButtonDisabled(true);
+        showError("No Profiles found in profiles folder. Please make sure to upload .ovpn files into /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles");
+        done(new Error("No Profiles found"));
+        return;
+      }
+
+      for (i = 0; i < files.length; i += 1) {
+        option = document.createElement("option");
+        option.value = files[i];
+        setElementText(option, files[i].replace(/\.ovpn$/i, ""));
+        dropdown.appendChild(option);
+      }
+
+      extendDebug("Loaded " + files.length + " profile(s).");
+      done(null);
+    },
+    function (error) {
       setDropdownDisabled(true);
       setButtonDisabled(true);
-      showError("No Profiles found in profiles folder. Please make sure to upload .ovpn files into /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles");
-      return Promise.reject("No Profiles found");
+      showError("Profiles could not be loaded: " + error.message);
+      done(error);
     }
-
-    files.forEach((file) => {
-      const option = document.createElement("option");
-      option.value = file;
-      option.textContent = file.replace(/\.ovpn$/i, "");
-      dropdown.appendChild(option);
-    });
-    extendDebug(`Loaded ${files.length} profile(s).`);
-    return Promise.resolve();
-  } catch (e) {
-    setDropdownDisabled(true);
-    setButtonDisabled(true);
-    showError("Profiles could not be loaded: " + e.message);
-    return Promise.resolve(e); //still resolve, maybe management interface is still up
-  }
+  );
 }
 
-async function connect() {
-  const cfg = document.getElementById('configDropdown').value;
-  if (!cfg) {
-    showError('No Profile found');
+function connect() {
+  var configName = document.getElementById("configDropdown").value;
+
+  if (!configName) {
+    showError("No Profile found");
     return;
   }
-  showError('');
-  setButtonDisabled(true);
-  setDropdownDisabled(true);
-  setDebug('Launching OpenVPN with ' + cfg);
-  try {
-    await lunaCall('luna://org.webosbrew.hbchannel.service/spawn', { command: `/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn --management 0.0.0.0 ${mgmtPort} --config /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles/${cfg} --daemon` });
-    console.log('state from connect');
-    setTimeout(getState,2000);
-  } catch (e) {
-    setDebug(e.message);
-    showError('Start failed ' + e.message);
-    setButtonDisabled(false);
-    setDropdownDisabled(false);
-  }
-}
-async function disconnect() {
-  showError('');
-  setButtonDisabled(true);
-  setDropdownDisabled(true);
-  setDebug('Stopping VPN Connection...');
-  try {
-    await terminateDaemon();
-    setTimeout(async() => {
-      console.log('state from disconnect');
-      await getState(1, true);
-      setDebug('VPN Stopped.');
-    }, 2000);
-  } catch (e) {
-    showError('Stop failed ' + e.message); setButtonDisabled(false);
-    setDropdownDisabled(false);
-  }
-}
-function btnClick() { curState === 'CONNECTED' ? disconnect() : connect(); }
 
-async function initVPN() {
-  setDebug('Preparing openvpn binary...');
-  try {
-    await lunaCall('luna://org.webosbrew.hbchannel.service/exec', {
-      command: 'chmod +x /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn'
-    });
-  } catch (e) {
-    extendDebug(`Failed to set executable flag: ${e.message}`);
+  showError("");
+  setButtonDisabled(true);
+  setDropdownDisabled(true);
+  setDebug("Launching OpenVPN with " + configName);
+
+  lunaCall(
+    "luna://org.webosbrew.hbchannel.service/spawn",
+    {
+      command: "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn --management 0.0.0.0 " + mgmtPort + " --config /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles/" + configName + " --daemon"
+    },
+    function () {
+      logMessage("state from connect");
+      window.setTimeout(function () {
+        getState();
+      }, 2000);
+    },
+    function (error) {
+      setDebug(error.message);
+      showError("Start failed " + error.message);
+      setButtonDisabled(false);
+      setDropdownDisabled(false);
+    }
+  );
+}
+
+function disconnect() {
+  showError("");
+  setButtonDisabled(true);
+  setDropdownDisabled(true);
+  setDebug("Stopping VPN Connection...");
+
+  terminateDaemon(function () {
+    window.setTimeout(function () {
+      logMessage("state from disconnect");
+      getState(1, true, function () {
+        setDebug("VPN Stopped.");
+      });
+    }, 2000);
+  });
+}
+
+function btnClick() {
+  if (curState === "CONNECTED") {
+    disconnect();
+    return;
   }
-  extendDebug('Checking management interface…');
-  console.log('state from initVPN');
-  await getState(1, true);
+
+  connect();
+}
+
+function initVPN(done) {
+  function finishInit() {
+    extendDebug("Checking management interface...");
+    logMessage("state from initVPN");
+    getState(1, true, function () {
+      done();
+    });
+  }
+
+  setDebug("Preparing openvpn binary...");
+
+  lunaCall(
+    "luna://org.webosbrew.hbchannel.service/exec",
+    {
+      command: "chmod +x /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn"
+    },
+    function () {
+      finishInit();
+    },
+    function (error) {
+      extendDebug("Failed to set executable flag: " + error.message);
+      finishInit();
+    }
+  );
+}
+
+function bindUiOnce() {
+  if (launchInitialized) {
+    return;
+  }
+
+  SpatialNavigation.init();
+  SpatialNavigation.add({ selector: ".item" });
+  SpatialNavigation.makeFocusable();
+  eventRegister.add();
+  document.getElementById("cbtn").addEventListener("click", btnClick, false);
+  launchInitialized = true;
 }
 
 function launchEvent() {
-  SpatialNavigation.init();
-  SpatialNavigation.add({ selector: '.item' });
-  SpatialNavigation.makeFocusable();
+  bindUiOnce();
+  refreshFocusableItems();
   eventRegister.add();
-  document.getElementById('cbtn').addEventListener('click', btnClick);
-  initVPN().then(() => {
-    extendDebug('Loading Profiles, this could take some seconds...');
-    loadProfiles().then(()=>{
-      extendDebug("Initialization complete.")
-    },
-    ()=>{
-      extendDebug('Failed to load profiles.');
+
+  initVPN(function () {
+    extendDebug("Loading Profiles, this could take some seconds...");
+    loadProfiles(function (error) {
+      if (error) {
+        extendDebug("Failed to load profiles.");
+        return;
+      }
+
+      extendDebug("Initialization complete.");
     });
   });
 }
 
-
-document.addEventListener('webOSLaunch', launchEvent, true);
-document.addEventListener('webOSRelaunch', launchEvent, true);
+document.addEventListener("webOSLaunch", launchEvent, true);
+document.addEventListener("webOSRelaunch", launchEvent, true);

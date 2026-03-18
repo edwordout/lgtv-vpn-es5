@@ -16,16 +16,35 @@ A small LG webOS TV app that wraps an OpenVPN client so you can start and stop V
 2. Install the IPK via `ares-install` or with the [webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop).
 
 ### Build the IPK yourself
-1. Install the webOS TV CLI so you have access to `ares-package` and `ares-install`.
-2. From the repository root, run:
+1. Install Node.js, then install the development dependencies:
    ```bash
-   ares-package .
+   npm install
+   ```
+2. Build the legacy-compatible app bundle:
+   ```bash
+   npm run build
+   ```
+   This copies the app into `build/com.sk.app.lgtv-vpn/` and transpiles app-owned JavaScript to ES5-safe output.
+3. Install the webOS TV CLI so you have access to `ares-package` and `ares-install`.
+4. Package the generated app directory:
+   ```bash
+   ares-package build/com.sk.app.lgtv-vpn
    ```
    This produces an IPK file such as `com.sk.app.lgtv-vpn_0.0.1_all.ipk` in the current directory.
-3. Deploy the generated IPK to your TV:
+5. Deploy the generated IPK to your TV:
    ```bash
    ares-install com.sk.app.lgtv-vpn_0.0.1_all.ipk
    ```
+
+## Development checks
+Run the local validation steps before packaging:
+
+```bash
+npm run lint
+npm test
+```
+
+`npm run lint` checks the app and build scripts, while `npm test` rebuilds the app, verifies ES5 syntax across the packaged JavaScript files, and checks for app-owned APIs that still require newer engines.
 
 ## Provide your VPN profiles
 The app expects your OpenVPN profiles to live in `/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles` on the TV:
@@ -35,6 +54,11 @@ The app expects your OpenVPN profiles to live in `/media/developer/apps/usr/palm
 ## Requirements
 - An LG TV with webOS that has the Homebrew Channel with root installed and running.
 - Valid OpenVPN configuration files that work with your VPN provider.
+
+## Legacy compatibility notes
+- `com.sk.app.lgtv-vpn/js/index.js` now avoids `Promise`, `async`/`await`, arrow functions, template literals, `String.prototype.includes`, and `classList`.
+- `com.sk.app.lgtv-vpn/js/legacy-polyfills.js` adds lightweight polyfills for `Date.now`, `Function.prototype.bind`, `String.prototype.trim`, `Array.prototype.indexOf`, `Array.prototype.forEach`, and `Array.prototype.filter`.
+- Vendored files in `webOSTVjs-1.2.4/` and `lib/` are shipped largely unchanged. They are already ES5 syntax-safe, but still rely on core ES5 browser features such as `Object.keys` and `Object.defineProperty`.
 
 ## Stability and troubleshooting
 - The app is still experimental and may not be fully stable yet. If it becomes unresponsive, restart the TV with QuickStart disabled.
