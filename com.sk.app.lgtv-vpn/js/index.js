@@ -250,6 +250,24 @@ function clearDropdown(dropdown) {
   }
 }
 
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
+function buildOpenVpnStartCommand(configName) {
+  var openVpnPath = "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn";
+  var configPath = "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles/" + configName;
+
+  /* HBC /spawn keeps a process attached to the service. Close inherited fds and
+   * launch OpenVPN through /exec so the daemon cannot keep HBC service handles.
+   */
+  return 'i=3; while [ "$i" -lt 256 ]; do eval "exec ${i}>&-"; i=$((i+1)); done; ' +
+    'exec ' + shellQuote(openVpnPath) +
+    " --management 127.0.0.1 " + mgmtPort +
+    " --config " + shellQuote(configPath) +
+    " --daemon </dev/null >/dev/null 2>&1";
+}
+
 function parseProfileList(output) {
   var lines = (output || "").split(/\r?\n/);
   var files = [];
@@ -402,6 +420,7 @@ function loadProfiles(done) {
 
 function connect() {
   var configName = document.getElementById("configDropdown").value;
+  var startCommand;
 
   if (!configName) {
     showError("No Profile found");
@@ -412,11 +431,12 @@ function connect() {
   setButtonDisabled(true);
   setDropdownDisabled(true);
   setDebug("Launching OpenVPN with " + configName);
+  startCommand = buildOpenVpnStartCommand(configName);
 
   lunaCall(
-    "luna://org.webosbrew.hbchannel.service/spawn",
+    "luna://org.webosbrew.hbchannel.service/exec",
     {
-      command: "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn --management 0.0.0.0 " + mgmtPort + " --config /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles/" + configName + " --daemon"
+      command: startCommand
     },
     function () {
       logMessage("state from connect");
