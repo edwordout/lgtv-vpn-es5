@@ -10,6 +10,9 @@ var DEFAULT_STATE_RETRIES = 20;
 var STATE_RETRY_DELAY_MS = 3000;
 var CONNECT_STATE_CHECK_DELAY_MS = 5000;
 var LAST_PROFILE_KEY = "lgtv-vpn.last-profile";
+var openVpnPath = "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn";
+var profilesPath = "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles/";
+var scriptsPath = "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/scripts/";
 
 function noop() {}
 
@@ -307,8 +310,9 @@ function shellQuote(value) {
 }
 
 function buildOpenVpnStartCommand(configName) {
-  var openVpnPath = "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn";
-  var configPath = "/media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles/" + configName;
+  var configPath = profilesPath + configName;
+  var upScriptPath = scriptsPath + "vpn-up.sh";
+  var downScriptPath = scriptsPath + "vpn-down.sh";
 
   /* HBC /spawn keeps a process attached to the service. Close inherited fds and
    * launch OpenVPN through /exec so the daemon cannot keep HBC service handles.
@@ -317,6 +321,9 @@ function buildOpenVpnStartCommand(configName) {
     'exec ' + shellQuote(openVpnPath) +
     " --management 127.0.0.1 " + mgmtPort +
     " --config " + shellQuote(configPath) +
+    " --script-security 2" +
+    " --up " + shellQuote(upScriptPath) +
+    " --down " + shellQuote(downScriptPath) +
     " --daemon </dev/null >/dev/null 2>&1";
 }
 
@@ -434,7 +441,7 @@ function loadProfiles(done) {
   lunaCall(
     "luna://org.webosbrew.hbchannel.service/exec",
     {
-      command: "cd /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/profiles && ls -1 *.ovpn"
+      command: "cd " + shellQuote(profilesPath) + " && ls -1 *.ovpn"
     },
     COMMAND_TIMEOUT_MS,
     function (response) {
@@ -555,19 +562,37 @@ function initVPN(done) {
     });
   }
 
-  setDebug("Preparing openvpn binary...");
+  function prepareScripts() {
+    extendDebug("Ensuring VPN helper scripts are executable...");
+    lunaCall(
+      "luna://org.webosbrew.hbchannel.service/exec",
+      {
+        command: "find " + shellQuote(scriptsPath) + " -type f -name '*.sh' -exec chmod +x {} \\;"
+      },
+      function () {
+        finishInit();
+      },
+      function (error) {
+        extendDebug("Failed to set helper script flags: " + error.message);
+        finishInit();
+      }
+    );
+  }
+
+  setDebug("Preparing OpenVPN runtime...");
+  extendDebug("Ensuring OpenVPN binary is executable...");
 
   lunaCall(
     "luna://org.webosbrew.hbchannel.service/exec",
     {
-      command: "chmod +x /media/developer/apps/usr/palm/applications/com.sk.app.lgtv-vpn/res/openvpn"
+      command: "chmod +x " + shellQuote(openVpnPath)
     },
     function () {
-      finishInit();
+      prepareScripts();
     },
     function (error) {
-      extendDebug("Failed to set executable flag: " + error.message);
-      finishInit();
+      extendDebug("Failed to set OpenVPN executable flag: " + error.message);
+      prepareScripts();
     }
   );
 }
